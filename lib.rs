@@ -47,6 +47,7 @@ mod qf_funding {
             }
         }
 
+        
         #[ink(message)]
         pub fn get_name(&self) -> String {
             self.name.clone()
