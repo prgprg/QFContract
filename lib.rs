@@ -393,32 +393,27 @@ mod qf_funding {
 
             // Calculate m_total_ideal = Σ(QF_ideal for all projects)
             // Formula 2: Sum all ideal matches (which are now just (Σ√ci)² from Formula 1)
-            let mut m_total_ideal = 0u128;
+            // Use Balance for larger precision in accumulation
+            let mut m_total_ideal = Balance::from(0u32);
             for (_, ideal_match, _) in projects_data {
-                m_total_ideal += ideal_match;
+                m_total_ideal += Balance::from(*ideal_match);
             }
 
             // If no ideal matching needed, return alpha = 1.0
-            if m_total_ideal == 0 {
+            if m_total_ideal == Balance::from(0u32) {
                 return 10000; // α = 1.0
             }
 
             // Formula 3: α = min(1, Budget / m_total_ideal)
             // Since we're using fixed-point arithmetic (10000 = 1.0):
-            // Use checked arithmetic to prevent overflow
-            if let Some(alpha_raw) = matching_pool.checked_mul(10000) {
-                let alpha_result = alpha_raw / m_total_ideal;
-                
-                // Apply min(1, α) constraint - alpha cannot exceed 1.0 (10000)
-                if alpha_result > 10000 {
-                    10000 // α = 1.0 (capped at 100%)
-                } else {
-                    alpha_result as u32
-                }
+            let matching_pool_balance = Balance::from(matching_pool);
+            let alpha_raw = (matching_pool_balance * Balance::from(10000u32)) / m_total_ideal;
+            
+            // Apply min(1, α) constraint - alpha cannot exceed 1.0 (10000)
+            if alpha_raw > Balance::from(10000u32) {
+                10000 // α = 1.0 (capped at 100%)
             } else {
-                // Overflow occurred, which means matching_pool is very large
-                // In this case, we can definitely afford α = 1.0
-                10000
+                alpha_raw.try_into().unwrap_or(10000) // If conversion fails, cap at 1.0
             }
         }
 
@@ -444,18 +439,20 @@ mod qf_funding {
                 }
             }
 
-            // Calculate sum of square roots for QF formula
-            let sum_sqrt: u128 = contributor_totals
+            // Calculate sum of square roots for QF formula using Balance for larger precision
+            let sum_sqrt: Balance = contributor_totals
                 .iter()
-                .map(|(_, amount)| self.sqrt_u128(*amount))
+                .map(|(_, amount)| Balance::from(self.sqrt_u128(*amount)))
                 .sum();
 
             // Formula 4: CQF_match = α × (Σ√ci)²
-            // α is scaled by 10000, so 10000 = 1.0
+            // Use Balance arithmetic to prevent overflow, then convert back
             let sqrt_squared = sum_sqrt * sum_sqrt;
-            let cqf_match = (sqrt_squared * alpha as u128) / 10000;
+            let alpha_balance = Balance::from(alpha);
+            let cqf_match = (sqrt_squared * alpha_balance) / Balance::from(10000u32);
             
-            cqf_match
+            // Convert back to u128, with overflow protection
+            cqf_match.try_into().unwrap_or(u128::MAX)
         }
 
         /// Calculate ideal match for a single project - Formula 1: (Σ√ci)²
@@ -480,14 +477,17 @@ mod qf_funding {
                 }
             }
 
-            // Calculate sum of square roots (QF formula)
-            let sum_sqrt: u128 = contributor_totals
+            // Calculate sum of square roots (QF formula) using Balance for larger precision
+            let sum_sqrt: Balance = contributor_totals
                 .iter()
-                .map(|(_, amount)| self.sqrt_u128(*amount))
+                .map(|(_, amount)| Balance::from(self.sqrt_u128(*amount)))
                 .sum();
 
             // Formula 1: QF_ideal = (Σ√ci)² (without subtraction)
-            sum_sqrt * sum_sqrt
+            let ideal_match = sum_sqrt * sum_sqrt;
+            
+            // Convert back to u128 with overflow protection
+            ideal_match.try_into().unwrap_or(u128::MAX)
         }
 
         /// Get current caller's statistics
@@ -550,7 +550,8 @@ mod qf_funding {
             }
 
             // Calculate ideal matches for all projects in the round (using scaled amounts)
-            let mut total_ideal_match = 0u128;
+            // Use Balance for larger precision in accumulation
+            let mut total_ideal_match = Balance::from(0u32);
             
             for project_id in &round.eligible_projects {
                 let project_contributions: Vec<&Contribution> = self.contributions
@@ -559,19 +560,21 @@ mod qf_funding {
                     .collect();
 
                 let ideal_match = self.calculate_project_ideal_match(&project_contributions);
-                total_ideal_match += ideal_match;
+                total_ideal_match += Balance::from(ideal_match);
             }
 
             // Calculate alpha (scaling factor) - both amounts are already scaled
+            let matching_pool_balance = Balance::from(round.matching_pool);
             let alpha = if round.matching_pool == 0 {
                 0 // No matching pool available, so α = 0
-            } else if total_ideal_match == 0 {
+            } else if total_ideal_match == Balance::from(0u32) {
                 10000 // No contributions, so α = 1.0 (but irrelevant)
-            } else if total_ideal_match <= round.matching_pool as u128 {
+            } else if total_ideal_match <= matching_pool_balance {
                 10000 // α = 1.0 (full funding available)
             } else {
                 // α = matching_pool / total_ideal_match, scaled by 10000
-                ((round.matching_pool as u128 * 10000) / total_ideal_match) as u32
+                let alpha_raw = (matching_pool_balance * Balance::from(10000u32)) / total_ideal_match;
+                alpha_raw.try_into().unwrap_or(10000) // Cap at 1.0 if conversion fails
             };
 
             // Update round
