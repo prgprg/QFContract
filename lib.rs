@@ -133,11 +133,20 @@ mod qf_funding {
                 return Err("Only admin can create rounds".into());
             }
 
-            // Verify all projects exist
+            // Verify all projects exist and no duplicates
             for project_id in &eligible_projects {
                 if !self.projects.contains(project_id) {
                     return Err("Project does not exist".into());
                 }
+            }
+            
+            // Check for duplicate project IDs in the eligible_projects list
+            let mut unique_projects = Vec::new();
+            for project_id in &eligible_projects {
+                if unique_projects.contains(project_id) {
+                    return Err("Duplicate project in eligible projects list".into());
+                }
+                unique_projects.push(*project_id);
             }
 
             let round_id = self.next_round_id;
@@ -372,6 +381,11 @@ mod qf_funding {
 
         /// Find optimal alpha for CQF - Formula 3: α = min(1, Budget / m_total_ideal)
         fn find_optimal_alpha(&self, projects_data: &[(Project, u128, Vec<&Contribution>)], matching_pool: u128) -> u32 {
+            // If no matching pool available, return alpha = 0
+            if matching_pool == 0 {
+                return 0;
+            }
+            
             // If no projects have contributions, return alpha = 0
             if projects_data.iter().all(|(_, _, contributions)| contributions.is_empty()) {
                 return 0;
@@ -406,18 +420,6 @@ mod qf_funding {
                 // In this case, we can definitely afford α = 1.0
                 10000
             }
-        }
-
-        /// Calculate total matching amount for all projects with given alpha
-        fn calculate_total_matching(&self, projects_data: &[(Project, u128, Vec<&Contribution>)], alpha: u32) -> u128 {
-            let mut total_matching = 0u128;
-
-            for (_, _, project_contributions) in projects_data {
-                // calculate_project_match now returns the matching amount directly
-                total_matching += self.calculate_project_match(project_contributions, alpha);
-            }
-
-            total_matching
         }
 
         /// Calculate match for a single project using CQF - Formula 4: α × (Σ√ci)²
@@ -488,22 +490,17 @@ mod qf_funding {
             sum_sqrt * sum_sqrt
         }
 
-        /// Get user statistics
+        /// Get current caller's statistics
         #[ink(message)]
-        pub fn get_user_stats(&self, user: H160) -> (u128, u32, Vec<u32>) {
+        pub fn get_my_stats(&self) -> (u128, u32, Vec<u32>) {
             let mut total_contributed = 0u128;
             let mut projects_supported = Vec::new();
             let mut rounds_participated = Vec::new();
 
-            // Use the provided user, but if it's zero/default, use caller
-            let target_user = if user == H160::zero() {
-                self.get_caller_h160()
-            } else {
-                user
-            };
+            let caller = self.get_caller_h160();
 
             for contribution in &self.contributions {
-                if contribution.contributor == target_user {
+                if contribution.contributor == caller {
                     total_contributed += contribution.amount;
                     
                     if !projects_supported.contains(&contribution.project_id) {
@@ -517,13 +514,6 @@ mod qf_funding {
             }
 
             (total_contributed, projects_supported.len() as u32, rounds_participated)
-        }
-
-        /// Get current caller's statistics (easier for testing)
-        #[ink(message)]
-        pub fn get_my_stats(&self) -> (u128, u32, Vec<u32>) {
-            let caller_h160 = self.get_caller_h160();
-            self.get_user_stats(caller_h160)
         }
 
         /// Helper function to convert scaled amount back to original units (for frontend display)
@@ -573,8 +563,12 @@ mod qf_funding {
             }
 
             // Calculate alpha (scaling factor) - both amounts are already scaled
-            let alpha = if total_ideal_match <= round.matching_pool as u128 {
-                10000 // α = 1.0 (full funding)
+            let alpha = if round.matching_pool == 0 {
+                0 // No matching pool available, so α = 0
+            } else if total_ideal_match == 0 {
+                10000 // No contributions, so α = 1.0 (but irrelevant)
+            } else if total_ideal_match <= round.matching_pool as u128 {
+                10000 // α = 1.0 (full funding available)
             } else {
                 // α = matching_pool / total_ideal_match, scaled by 10000
                 ((round.matching_pool as u128 * 10000) / total_ideal_match) as u32
@@ -994,3 +988,5 @@ mod qf_funding {
 
     
 }
+
+
